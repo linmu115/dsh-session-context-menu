@@ -1,101 +1,107 @@
-import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
-
 export const name = 'dsh-session-context-menu'
 
-const REMOTE_PACKAGE = 'dsh-session-context-menu'
+export const inject = ['webServer', 'workspaceRegistry']
 
-const looseCodec = () => ({
-  mode: 'strict',
-  typeSymbol: 'dsh-session-context-menu/json',
-  schema: { parse: value => value },
-})
+const ENDPOINT = '/dsh-session-context-menu/worktree'
+const MAX_BODY_BYTES = 64 * 1024
 
-function descriptor(method, parameters) {
-  return {
-    id: `${REMOTE_PACKAGE}#sessionContextMenu/${method}`,
-    service: 'sessionContextMenu',
-    namespace: 'sessionContextMenu',
-    method,
-    invocation: { kind: 'direct' },
-    parameters: parameters.map(name => ({ name, wire: name, source: 'json', codec: looseCodec() })),
-    result: looseCodec(),
-  }
+function sendJson(res, status, value) {
+  const body = Buffer.from(JSON.stringify(value))
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': String(body.length),
+    'cache-control': 'no-store',
+  })
+  res.end(body)
 }
 
-const REMOTE_INVOCATIONS = [descriptor('createWorktree', ['workspaceId', 'name', 'baseCommit'])]
-
-/** Host-side bridge for the workspace menu's permanent-worktree action. */
-class SessionContextMenuGateway extends TypertRemoteService {
-  static inject = ['workspaceRegistry', 'typert']
-
-  constructor(ctx) {
-    super(ctx, 'sessionContextMenu')
-    this.context = ctx
-    const remote = Remote('createWorktree')
-    remote(SessionContextMenuGateway.prototype.createWorktree, {
-      name: 'createWorktree',
-      private: false,
-      static: false,
-      addInitializer: initializer => initializer.call(this),
+function readJson(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    let bytes = 0
+    req.on('data', chunk => {
+      bytes += chunk.length
+      if (bytes > MAX_BODY_BYTES) {
+        reject(new Error('请求内容过大'))
+        req.destroy()
+        return
+      }
+      chunks.push(chunk)
     })
-    if (ctx.typert && typeof ctx.typert.register === 'function') {
+    req.on('end', () => {
       try {
-        const dispose = ctx.typert.register({
-          package: REMOTE_PACKAGE,
-          face: 'host',
-          model: 'src',
-          schemas: [],
-          invocations: REMOTE_INVOCATIONS,
-        })
-        ctx.on('dispose', () => { try { dispose() } catch {} })
-      } catch (error) {
-        ctx.logger?.warn?.(`dsh-session-context-menu: remote registration failed: ${String(error?.message ?? error)}`)
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'))
+      } catch {
+        reject(new Error('请求不是有效 JSON'))
       }
-    }
-  }
-
-  async createWorktree(workspaceId, name, baseCommit) {
-    const workspace = this.context.workspaceRegistry.get(String(workspaceId))
-    if (workspace === undefined) return { ok: false, error: '工作区不存在或已被移除' }
-    const worktree = this.context.get('worktree')
-    if (worktree === undefined || typeof worktree.create !== 'function') {
-      return { ok: false, error: '永久工作树后端未启用，请先启用 dsh-worktree' }
-    }
-    try {
-      const result = await worktree.create({
-        name: String(name ?? '').trim(),
-        baseCommit: typeof baseCommit === 'string' && baseCommit.trim() !== '' ? baseCommit.trim() : undefined,
-        cwd: workspace.path,
-        createdBy: null,
-      })
-      let registered = false
-      try {
-        await this.context.workspaceRegistry.create(result.worktree.path, `[worktree] ${result.worktree.name}`)
-        registered = true
-      } catch (error) {
-        result.registrationWarning = String(error?.message ?? error)
-      }
-      return {
-        ok: true,
-        name: result.worktree.name,
-        path: result.worktree.path,
-        repoRoot: result.repoRoot,
-        baseCommit: result.worktree.baseCommit,
-        registered,
-        ...(result.registrationWarning ? { registrationWarning: result.registrationWarning } : {}),
-      }
-    } catch (error) {
-      return { ok: false, error: String(error?.message ?? error) }
-    }
-  }
+    })
+    req.on('error', reject)
+  })
 }
 
-export const inject = ['workspaceRegistry', 'typert']
+async function createWorktree(ctx, input) {
+  const workspaceId = String(input?.workspaceId ?? '').trim()
+  const name = String(input?.name ?? '').trim()
+  const baseCommit = String(input?.baseCommit ?? '').trim()
+  if (workspaceId === '') throw new Error('缺少工作区 ID')
+  if (name === '') throw new Error('工作树名称不能为空')
+
+  const workspace = ctx.workspaceRegistry.get(workspaceId)
+  if (workspace === undefined) throw new Error('工作区不存在或已被移除')
+  const worktree = ctx.get('worktree')
+  if (worktree === undefined || typeof worktree.create !== 'function') {
+    throw new Error('永久工作树后端未启用，请先启用 dsh-worktree')
+  }
+
+  const result = await worktree.create({
+    name,
+    ...(baseCommit === '' ? {} : { baseCommit }),
+    cwd: workspace.path,
+    createdBy: null,
+  })
+  let registered = false
+  let registrationWarning
+  try {
+    await ctx.workspaceRegistry.create(result.worktree.path, `[worktree] ${result.worktree.name}`)
+    registered = true
+  } catch (error) {
+    registrationWarning = String(error?.message ?? error)
+  }
+  return {
+    ok: true,
+    name: result.worktree.name,
+    path: result.worktree.path,
+    repoRoot: result.repoRoot,
+    baseCommit: result.worktree.baseCommit,
+    registered,
+    ...(registrationWarning ? { registrationWarning } : {}),
+  }
+}
 
 export function apply(ctx) {
-  if (ctx.get('workspaceRegistry') !== undefined && ctx.get('typert') !== undefined) {
-    ctx.plugin(SessionContextMenuGateway)
-  }
+  ctx.webServer.register({
+    kind: 'prefix',
+    path: ENDPOINT,
+    handler: async (req, res) => {
+      const path = new URL(req.url ?? '/', 'http://localhost').pathname
+      if (path !== ENDPOINT) {
+        sendJson(res, 404, { ok: false, error: '接口不存在' })
+        return
+      }
+      if (req.method !== 'POST') {
+        res.setHeader('allow', 'POST')
+        sendJson(res, 405, { ok: false, error: '只允许 POST' })
+        return
+      }
+      try {
+        const input = await readJson(req)
+        sendJson(res, 200, await createWorktree(ctx, input))
+      } catch (error) {
+        sendJson(res, 400, { ok: false, error: String(error?.message ?? error) })
+      }
+    },
+  })
 }
 
-export { SessionContextMenuGateway }
+export { createWorktree }
+

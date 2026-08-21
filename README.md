@@ -1,17 +1,35 @@
 # dsh-session-context-menu
 
-为 DeepSeek Harness EAC 会话列表和工作区补充原生右键菜单与持久置顶。
+为 DeepSeek Harness EAC 的会话列表和工作区补充原生右键菜单，针对 EAC 4.4.1 / DSH 0.1.1-rc.2。
 
-- 右键会话行打开操作菜单
-- 置顶/取消置顶（按会话 ID 保存，不改标题、不复制会话）
-- 复用 DSH 官方重命名、分叉、归档接口
-- 复用 `dsh-session-manager` 的带确认删除
-- 在“按工作区”和“单列表”两种视图下均生效
-- 右键工作区可置顶/取消置顶、重命名、归档其中全部会话、删除工作区
-- 通过 `dsh-worktree` 创建永久 Git 工作树，并自动登记为新的工作区
+## 会话右键
 
-置顶状态只保存 ID，不会复制或改写会话。归档工作区会逐一调用 DSH 的官方归档接口；删除工作区仍由 DSH 原生操作负责。
+- 置顶/取消置顶（按会话 ID 保存）
+- 重命名
+- 创建分支聊天
+- 归档聊天
+- 调用 `dsh-session-manager` 的带确认删除
 
-“创建永久工作树”需要同时启用 `dsh-worktree`。插件会把工作区路径作为仓库目录，创建完成后将新路径登记为 `[worktree] 名称` 工作区；如果登记失败，Git 工作树仍会保留，并在提示中显示原因。
+## 工作区右键
 
-当前版本针对 EAC 4.4.1 / DSH 0.1.0-rc.7，兼容已安装的 DSH 0.1.1-rc.1。
+- 置顶/取消置顶（按工作区 ID 保存，并调用 DSH 官方顺序接口移到顶部）
+- 编辑：修改名称并显示只读文件夹路径
+- 归档聊天：归档该工作区中全部未归档聊天
+- 创建永久工作树：调用已启用的 `dsh-worktree`，创建后登记为 `[worktree] 名称` 工作区
+- 移除项目：只移除 DSH 工作区登记，保留文件夹与会话记录
+
+插件使用 DSH rc.2 的 `workspaces` / `sessions` 官方客户端服务，不覆盖 `@deepseek-ai/dsh-client-ui-workspace`。工作树功能通过本地同源端点连接 Host，不依赖 rc.2 已移除的旧浏览器模块。
+
+置顶状态保存在浏览器本地存储中，键为：
+
+- `dsh.session.context-menu.pins.v1`
+- `dsh.workspace.context-menu.pins.v1`
+
+开发与验证：
+
+```powershell
+npm run build
+npm run check
+npm test
+```
+
