@@ -45,3 +45,39 @@ test('pin state is ID-based, persistent, and reversible without disturbing norma
   assert.deepEqual(bridge.sortPinned(['a', 'b', 'c']), ['a', 'b', 'c'])
   assert.ok(events.includes('dsh-session-context-menu:change'))
 })
+
+test('workspace pin state is separate from session pins and keeps insertion order', async () => {
+  let definition
+  globalThis.localStorage = new MemoryStorage()
+  globalThis.window = {
+    __ModuleLoader__: {
+      load(value) {
+        definition = value
+      },
+    },
+    dispatchEvent() {
+      return true
+    },
+  }
+
+  await import(`../lib/client.js?workspace-test=${Date.now()}`)
+  const exports = definition.factory(() => {
+    throw new Error('the bridge bundle should not import runtime modules')
+  })
+  exports.apply({})
+
+  const bridge = window.__dshSessionContextMenu
+  assert.equal(bridge.toggleWorkspacePin('workspace-b'), true)
+  assert.equal(bridge.isWorkspacePinned('workspace-b'), true)
+  assert.deepEqual(
+    bridge.sortPinnedWorkspaces(['workspace-a', 'workspace-b', 'workspace-c']),
+    ['workspace-b', 'workspace-a', 'workspace-c'],
+  )
+  assert.equal(bridge.toggleWorkspacePin('workspace-b'), false)
+  assert.equal(bridge.isWorkspacePinned('workspace-b'), false)
+  assert.deepEqual(
+    bridge.sortPinnedWorkspaces(['workspace-a', 'workspace-b', 'workspace-c']),
+    ['workspace-a', 'workspace-b', 'workspace-c'],
+  )
+  assert.deepEqual(bridge.listPinned(), [])
+})

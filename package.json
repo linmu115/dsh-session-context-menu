@@ -1,7 +1,7 @@
 {
   "name": "dsh-session-context-menu",
-  "version": "0.1.0-eac.3",
-  "description": "Native right-click session actions and persistent pinning for DeepSeek Harness EAC.",
+  "version": "0.1.0-eac.4",
+  "description": "Native right-click session and workspace actions with persistent pinning for DeepSeek Harness EAC.",
   "type": "module",
   "license": "MIT",
   "main": "lib/index.js",
