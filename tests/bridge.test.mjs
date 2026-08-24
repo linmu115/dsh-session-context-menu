@@ -83,7 +83,7 @@ test('workspace pin state is separate from session pins and keeps insertion orde
 })
 
 
-test('workspace actions call the rc.2 workspace service with stable IDs', async () => {
+test('workspace actions call the DSH workspace service with stable IDs', async () => {
   let definition
   const calls = []
   globalThis.localStorage = new MemoryStorage()

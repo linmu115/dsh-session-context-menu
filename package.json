@@ -1,7 +1,7 @@
 {
   "name": "dsh-session-context-menu",
-  "version": "0.1.0-eac.5",
-  "description": "Native right-click session and workspace actions for EAC 4.4.1 and DSH rc.2.",
+  "version": "0.2.0",
+  "description": "Right-click session and workspace actions for the official DeepSeek Harness web profile.",
   "type": "module",
   "license": "MIT",
   "main": "lib/index.js",
