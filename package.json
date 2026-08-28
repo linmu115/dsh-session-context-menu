@@ -1,6 +1,6 @@
 {
   "name": "dsh-session-context-menu",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Right-click session and workspace actions for the official DeepSeek Harness web profile.",
   "type": "module",
   "license": "MIT",
@@ -40,7 +40,7 @@
     "test": "node --test tests/*.test.mjs"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-client-ui-workspace": ">=0.1.0-rc.7"
+    "@deepseek-ai/dsh-client-ui-workspace": "*"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-client-ui-workspace": {
