@@ -1,6 +1,6 @@
 {
   "name": "dsh-session-context-menu",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Right-click session and workspace actions for the official DeepSeek Harness web profile.",
   "type": "module",
   "license": "MIT",
