@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.2 — 2026-09-05
+
+- Add an owner-scoped menu action host with immutable selected-session context,
+  explicit availability and disabled reasons, abortable actions and disposal.
+- Guard same-title conversations, reused rows, owner replacement, late results
+  and plugin unload. Retain the version 3 bridge and receipt-before-hide deletion.
+- Support keyboard menu opening, navigation and dismissal. The new host is an
+  integration foundation; Maintenance action registration is not yet included.
+- Validated with the 34 existing and added focused tests, build and syntax checks;
+  the user's live UI acceptance follows installation.
+
 ## 0.3.1 — 2026-09-05
 
 - Replace the popup-based Maintenance handoff with direct `delete-session`.
