@@ -2,6 +2,52 @@ const STORAGE_KEY = 'dsh.session.context-menu.pins.v1'
 const WORKSPACE_STORAGE_KEY = 'dsh.workspace.context-menu.pins.v1'
 const CHANGE_EVENT = 'dsh-session-context-menu:change'
 const STYLE_ID = 'dsh-session-context-menu/client.css'
+const menuRegistries = new WeakMap()
+const HOST_READY_EVENT = 'dsh-session-context-menu:ready'
+const HOST_UNAVAILABLE_EVENT = 'dsh-session-context-menu:unavailable'
+
+function createMenuRegistry() {
+  const owners = new Map()
+  let disposed = false
+  return {
+    register(owner, actions) {
+      if (disposed) throw new Error('菜单宿主已卸载')
+      if (typeof owner !== 'string' || !owner.trim() || !Array.isArray(actions)) throw new TypeError('Invalid menu owner/actions')
+      const ids = new Set()
+      const copies = actions.map(action => {
+        if (!action || typeof action.id !== 'string' || !action.id.trim() || ids.has(action.id) ||
+            typeof action.label !== 'string' || !action.label.trim() || typeof action.run !== 'function' ||
+            (action.getState !== undefined && typeof action.getState !== 'function')) throw new TypeError('Invalid or duplicate menu action')
+        ids.add(action.id)
+        return Object.freeze({ id: action.id, label: action.label, run: action.run, getState: action.getState })
+      })
+      owners.get(owner)?.controller.abort()
+      const entry = { owner, actions: copies, controller: new AbortController() }
+      owners.set(owner, entry)
+      return () => {
+        entry.controller.abort()
+        if (owners.get(owner) === entry) owners.delete(owner)
+      }
+    },
+    entries: () => [...owners.values()],
+    current: entry => !disposed && owners.get(entry.owner) === entry && !entry.controller.signal.aborted,
+    dispose() {
+      disposed = true
+      for (const entry of owners.values()) entry.controller.abort()
+      owners.clear()
+    },
+  }
+}
+
+function pluginActionState(action, target) {
+  if (!target) return { enabled: false, disabledReason: '未能确认官方会话 ID' }
+  try {
+    const state = action.getState?.(target) ?? {}
+    if (typeof state !== 'object' || typeof state.then === 'function') throw new TypeError('动作状态必须同步返回')
+    return { visible: state.visible !== false, enabled: state.enabled !== false && !state.disabledReason,
+      disabledReason: state.disabledReason ? String(state.disabledReason) : state.enabled === false ? '当前不可用' : '' }
+  } catch (error) { return { enabled: false, disabledReason: `动作状态不可用：${error?.message ?? error}` } }
+}
 
 function sanitizeIds(value) {
   if (!Array.isArray(value)) return []
@@ -105,8 +151,11 @@ function sessionItems(snapshot) {
 }
 
 function createBridge(ctx = {}) {
+  const registry = createMenuRegistry()
   const bridge = {
     version: 3,
+    menuApiVersion: 1,
+    registerActions: (owner, actions) => registry.register(owner, actions),
     eventName: CHANGE_EVENT,
     listPinned: readPins,
     isPinned(sessionId) {
@@ -180,6 +229,7 @@ function createBridge(ctx = {}) {
       return { archived: completed }
     },
   }
+  menuRegistries.set(bridge, registry)
   return bridge
 }
 
@@ -362,10 +412,11 @@ function makeMenuItem(label, action, options = {}) {
 }
 
 async function showEnhancementMenu(ctx, bridge, row, event, scheduleDecorate, lifetime) {
+  const revision = lifetime.menuRevision
   if (!nativeMenuButton(row)) return false
   const workspaceRow = classContains(row, '_projectRow')
   const selectedTarget = workspaceRow ? undefined : await selectSessionRow(ctx, row, lifetime)
-  if (!row.isConnected || lifetime.disposed) return false
+  if (!row.isConnected || lifetime.disposed || revision !== lifetime.menuRevision) return false
   const target = workspaceRow ? resolveRow(ctx, row) : (selectedTarget ?? {})
   const currentTarget = () => {
     if (!row.isConnected || lifetime.disposed) throw new Error('列表已刷新，请重新打开菜单')
@@ -378,6 +429,7 @@ async function showEnhancementMenu(ctx, bridge, row, event, scheduleDecorate, li
     return current
   }
   const menu = document.createElement('div')
+  menu.returnFocus = () => { if (row.isConnected && !lifetime.disposed) row.focus() }
   menu.className = 'dsh-context-menu'
   menu.setAttribute('role', 'menu')
   const item = (label, action, enabled = true) => {
@@ -385,9 +437,10 @@ async function showEnhancementMenu(ctx, bridge, row, event, scheduleDecorate, li
       if (lifetime.busy || lifetime.disposed) return
       lifetime.busy = true
       menu.remove()
+      menu.returnFocus()
       try { await action() }
       catch (error) { if (!lifetime.disposed) showToast(error?.message ?? String(error), 'error') }
-      finally { lifetime.busy = false; scheduleDecorate() }
+      finally { lifetime.busy = false; if (!lifetime.disposed) scheduleDecorate() }
     }, { disabled: !enabled }))
   }
   item(workspaceRow ? '官方工作区操作…' : '官方会话操作…', () => {
@@ -424,6 +477,39 @@ async function showEnhancementMenu(ctx, bridge, row, event, scheduleDecorate, li
       const message = await deleteMaintenanceSession(ctx, sessionIdOf(current.session))
       if (!lifetime.disposed) showToast(message)
     }, !!session)
+    const registry = menuRegistries.get(bridge)
+    for (const entry of registry?.entries() ?? []) {
+      for (const action of entry.actions) {
+        const initialTarget = session ? Object.freeze({ nativeSessionId: sessionIdOf(session), workspaceId: workspaceIdOf(target.workspace) || null }) : null
+        const initialState = pluginActionState(action, initialTarget)
+        if (initialState.visible === false) continue
+        item(`${action.label}${initialState.disabledReason ? `（${initialState.disabledReason}）` : ''}`, async () => {
+          if (!registry.current(entry)) throw new Error('插件动作已更新，请重新打开菜单')
+          const current = currentTarget()
+          const nativeSessionId = sessionIdOf(current.session)
+          if (!nativeSessionId) throw new Error('未能确认官方会话 ID')
+          const target = Object.freeze({ nativeSessionId, workspaceId: workspaceIdOf(current.workspace) || null })
+          const state = pluginActionState(action, target)
+          if (state.visible === false || !state.enabled) throw new Error(state.disabledReason || '动作已不可用，请重新打开菜单')
+          if (!registry.current(entry) || lifetime.disposed) throw new Error('插件动作已更新，请重新打开菜单')
+          const controller = new AbortController()
+          lifetime.pendingActions ??= new Set()
+          lifetime.pendingActions.add(controller)
+          const abort = () => controller.abort()
+          entry.controller.signal.addEventListener('abort', abort, { once: true })
+          try {
+            const result = await action.run(target, { signal: controller.signal })
+            if (!lifetime.disposed && !controller.signal.aborted && registry.current(entry) && result?.message) showToast(result.message)
+          } catch (error) {
+            if (!lifetime.disposed && !controller.signal.aborted && registry.current(entry)) throw error
+          } finally {
+            entry.controller.signal.removeEventListener('abort', abort)
+            lifetime.pendingActions.delete(controller)
+          }
+        }, !!session && initialState.enabled)
+        menu.lastElementChild.title = initialState.disabledReason || ''
+      }
+    }
   }
   if (workspaceRow ? !target.workspace : !target.session) {
     const reason = document.createElement('div')
@@ -449,7 +535,7 @@ function placeAndOpenMenu(menu, x, y) {
 
 function installDomIntegration(ctx, bridge) {
   if (typeof document === 'undefined') return () => {}
-  const lifetime = { disposed: false, busy: false }
+  const lifetime = { disposed: false, busy: false, menuRevision: 0, pendingActions: new Set() }
   let scheduled = false
   const scheduleDecorate = () => {
     if (scheduled || lifetime.disposed) return
@@ -460,8 +546,8 @@ function installDomIntegration(ctx, bridge) {
     })
   }
 
-  const onContextMenu = event => {
-    if (event.defaultPrevented || event.shiftKey || lifetime.busy || lifetime.disposed) return
+  const onContextMenu = (event, keyboard = false) => {
+    if (event.defaultPrevented || (!keyboard && event.shiftKey) || lifetime.busy || lifetime.disposed) return
     const row = event.target instanceof Element ? event.target.closest('[role="treeitem"]') : null
     if (row === null) return
     const workspaceRow = classContains(row, '_projectRow')
@@ -470,17 +556,38 @@ function installDomIntegration(ctx, bridge) {
     if (!nativeMenuButton(row)) return
     event.preventDefault()
     event.stopPropagation()
+    lifetime.menuRevision++
     lifetime.busy = true
-    void showEnhancementMenu(ctx, bridge, row, event, scheduleDecorate, lifetime)
+    const rect = keyboard ? row.getBoundingClientRect() : null
+    void showEnhancementMenu(ctx, bridge, row, keyboard ? { clientX: rect.left, clientY: rect.bottom } : event, scheduleDecorate, lifetime)
       .catch(error => { if (!lifetime.disposed) showToast(error?.message ?? error, 'error') })
       .finally(() => { lifetime.busy = false })
   }
   const onPointerDown = event => {
     const menu = document.querySelector('.dsh-context-menu')
-    if (menu !== null && event.target instanceof Node && !menu.contains(event.target)) menu.remove()
+    if (event.target instanceof Node && (!menu || !menu.contains(event.target))) {
+      lifetime.menuRevision++
+      menu?.remove()
+    }
   }
   const onKeyDown = event => {
-    if (event.key === 'Escape') document.querySelector('.dsh-context-menu')?.remove()
+    const menu = document.querySelector('.dsh-context-menu')
+    if (event.key === 'Escape') {
+      lifetime.menuRevision++
+      if (menu) { event.preventDefault(); event.stopPropagation(); menu.remove(); menu.returnFocus?.() }
+      return
+    }
+    if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) { onContextMenu(event, true); return }
+    if (!menu || !menu.contains(event.target)) return
+    const buttons = [...menu.querySelectorAll('button:not([disabled])')]
+    if (event.key === 'Tab') { menu.remove(); return }
+    if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+      event.preventDefault(); event.stopPropagation()
+      const index = buttons.indexOf(event.target)
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
+        : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length
+      buttons[next]?.focus()
+    }
   }
   const observer = new MutationObserver(records => {
     // Conversation streaming is unrelated to sidebar decoration.
@@ -501,6 +608,8 @@ function installDomIntegration(ctx, bridge) {
 
   return () => {
     lifetime.disposed = true
+    for (const controller of lifetime.pendingActions) controller.abort()
+    lifetime.pendingActions.clear()
     observer.disconnect()
     document.removeEventListener('contextmenu', onContextMenu, true)
     document.removeEventListener('pointerdown', onPointerDown, true)
@@ -516,18 +625,28 @@ function installDomIntegration(ctx, bridge) {
 export const inject = ['workspaces', 'sessions', 'uiWorkspace']
 
 export function apply(ctx) {
+  window.__dshSessionContextMenu?.disposeMenuHost?.()
   const bridge = createBridge(ctx)
   window.__dshSessionContextMenu = bridge
   const removeCss = ensureCss()
   const removeDom = installDomIntegration(ctx, bridge)
   emitChange(bridge.listPinned(), bridge.listWorkspacePinned())
 
+  let disposed = false
   const dispose = () => {
+    if (disposed) return
+    disposed = true
+    menuRegistries.get(bridge).dispose()
     removeDom()
     removeCss()
-    if (window.__dshSessionContextMenu === bridge) delete window.__dshSessionContextMenu
+    if (window.__dshSessionContextMenu === bridge) {
+      delete window.__dshSessionContextMenu
+      window.dispatchEvent(new CustomEvent(HOST_UNAVAILABLE_EVENT, { detail: { menuApiVersion: 1, bridge } }))
+    }
     emitChange([], [])
   }
+  bridge.disposeMenuHost = dispose
+  window.dispatchEvent(new CustomEvent(HOST_READY_EVENT, { detail: { menuApiVersion: 1, bridge } }))
   if (typeof ctx?.effect === 'function') ctx.effect(() => dispose)
 }
 

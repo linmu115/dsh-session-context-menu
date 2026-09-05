@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { parseHTML } from 'linkedom'
 import { createBridge, uniqueByTitle, resolveRow, nativeMenuButton, deleteMaintenanceSession,
-  showEnhancementMenu, installDomIntegration } from '../src/client.js'
+  showEnhancementMenu, installDomIntegration, apply } from '../src/client.js'
 
 function fixture({ duplicate = false } = {}) {
   const { window, document } = parseHTML('<html><head></head><body></body></html>')
@@ -281,4 +281,196 @@ test('missing official selection explains disabled enhancements instead of guess
   assert.equal(items[1].disabled, true)
   assert.equal(items[2].disabled, true)
   assert.match(document.querySelector('[role="status"]').textContent, /官方会话 ID/)
+})
+
+test('owner replacement keeps new registration when the old disposer runs', async () => {
+  const f = fixture({ duplicate: true })
+  const targets = []
+  const old = f.bridge.registerActions('maintenance', [{ id: 'open', label: '旧动作', run: () => assert.fail('stale action') }])
+  const remove = f.bridge.registerActions('maintenance', [{ id: 'open', label: '维护看板', run: target => targets.push(target) }])
+  old()
+  const buttons = await f.open()
+  assert.equal(buttons.some(button => button.textContent === '旧动作'), false)
+  buttons.find(button => button.textContent === '维护看板').click()
+  await tick()
+  assert.deepEqual(targets, [{ nativeSessionId: 's1', workspaceId: 'w1' }])
+  assert.equal(Object.isFrozen(targets[0]), true)
+  remove(); remove()
+  assert.equal((await f.open()).length, 3)
+})
+
+test('registration validates atomically and stale open actions cannot execute', async () => {
+  const f = fixture()
+  f.bridge.registerActions('owner', [{ id: 'action', label: '动作', run: () => assert.fail('stale') }])
+  assert.throws(() => f.bridge.registerActions('owner', [{ id: 'bad', label: 'bad' }]), /Invalid/)
+  const buttons = await f.open()
+  f.bridge.registerActions('owner', [])
+  buttons.find(button => button.textContent === '动作').click()
+  await tick()
+  assert.match(document.querySelector('.dsh-context-toast').textContent, /已更新/)
+  assert.deepEqual(f.calls, [])
+})
+
+test('action state failure is local, hidden actions stay hidden, and state is checked again at click', async () => {
+  const f = fixture()
+  let enabled = true
+  f.bridge.registerActions('owner', [
+    { id: 'bad', label: '坏状态', getState: () => { throw new Error('离线') }, run: () => assert.fail() },
+    { id: 'hidden', label: '隐藏', getState: () => ({ visible: false }), run: () => assert.fail() },
+    { id: 'later', label: '稍后', getState: () => ({ enabled, disabledReason: enabled ? '' : '不可用' }), run: () => assert.fail() },
+  ])
+  const buttons = await f.open()
+  assert.equal(buttons[0].disabled, false)
+  assert.equal(buttons.find(button => button.textContent.startsWith('坏状态')).disabled, true)
+  assert.equal(buttons.some(button => button.textContent === '隐藏'), false)
+  enabled = false
+  buttons.find(button => button.textContent === '稍后').click()
+  await tick()
+  assert.match(document.querySelector('.dsh-context-toast').textContent, /不可用/)
+  assert.deepEqual(f.calls, [])
+})
+
+test('plugin actions revalidate same-title selected identity and recycled rows', async () => {
+  for (const mutate of [f => f.select('s2'), f => f.row.remove()]) {
+    const f = fixture({ duplicate: true })
+    f.bridge.registerActions('owner', [{ id: 'action', label: '动作', run: () => assert.fail('wrong identity') }])
+    const buttons = await f.open()
+    mutate(f)
+    buttons.find(button => button.textContent === '动作').click()
+    await tick()
+    assert.match(document.querySelector('.dsh-context-toast').textContent, /重新打开菜单/)
+    assert.deepEqual(f.calls, [])
+  }
+})
+
+test('plugin failure reports an error without hiding the native session', async () => {
+  const f = fixture()
+  f.bridge.registerActions('owner', [{ id: 'action', label: '动作', run: async () => { throw new Error('服务离线') } }])
+  ;(await f.open()).find(button => button.textContent === '动作').click()
+  await tick()
+  assert.match(document.querySelector('[role="alert"]').textContent, /服务离线/)
+  assert.deepEqual(f.calls, [])
+})
+
+test('ready supports consumers arriving before or after host, and reload invalidates the old host', async () => {
+  const f = fixture()
+  const disposers = []
+  f.ctx.effect = fn => disposers.push(fn())
+  const ready = []
+  const unavailable = []
+  window.addEventListener('dsh-session-context-menu:ready', event => {
+    ready.push(event.detail.bridge)
+    event.detail.bridge.registerActions('early', [{ id: 'a', label: '提前加载', run: () => {} }])
+  })
+  window.addEventListener('dsh-session-context-menu:unavailable', event => unavailable.push(event.detail.bridge))
+  apply(f.ctx)
+  const first = window.__dshSessionContextMenu
+  assert.equal(first.menuApiVersion, 1)
+  assert.equal(first.version, 3)
+  first.registerActions('late', [{ id: 'b', label: '稍后加载', run: () => {} }])
+  const life = { busy: false, disposed: false }
+  await showEnhancementMenu(f.ctx, first, f.row, { clientX: 0, clientY: 0 }, () => {}, life)
+  assert.match(document.querySelector('.dsh-context-menu').textContent, /提前加载.*稍后加载/)
+  apply(f.ctx)
+  const second = window.__dshSessionContextMenu
+  assert.notEqual(second, first)
+  assert.deepEqual(ready, [first, second])
+  assert.deepEqual(unavailable, [first])
+  assert.throws(() => first.registerActions('dead', []), /卸载/)
+  disposers[0]()
+  assert.equal(window.__dshSessionContextMenu, second)
+  disposers[1]()
+  assert.equal(window.__dshSessionContextMenu, undefined)
+  assert.deepEqual(unavailable, [first, second])
+})
+
+test('unregister aborts a running plugin and suppresses its late result', async () => {
+  const f = fixture()
+  let resolve, signal
+  const remove = f.bridge.registerActions('owner', [{ id: 'a', label: '等待', run: (_target, options) => {
+    signal = options.signal
+    return new Promise(done => { resolve = done })
+  } }])
+  ;(await f.open()).find(button => button.textContent === '等待').click()
+  remove()
+  assert.equal(signal.aborted, true)
+  resolve({ message: '不应显示' })
+  await tick()
+  assert.equal(document.querySelector('.dsh-context-toast'), null)
+})
+
+test('host disposal aborts pending action and suppresses late rejection', async () => {
+  const f = fixture()
+  let dispose, reject, signal
+  f.ctx.effect = fn => { dispose = fn() }
+  apply(f.ctx)
+  window.__dshSessionContextMenu.registerActions('owner', [{ id: 'a', label: '等待', run: (_target, options) => {
+    signal = options.signal
+    return new Promise((_resolve, fail) => { reject = fail })
+  } }])
+  const event = new window.Event('contextmenu', { bubbles: true, cancelable: true })
+  f.row.dispatchEvent(event)
+  await tick()
+  document.querySelector('.dsh-context-menu button:last-child').click()
+  dispose()
+  assert.equal(signal.aborted, true)
+  reject(new Error('晚到错误'))
+  await tick()
+  assert.equal(document.querySelector('.dsh-context-toast'), null)
+  assert.equal(document.querySelector('.dsh-context-menu'), null)
+})
+
+test('keyboard opens one menu, moves focus, and Escape returns focus to the row', async () => {
+  const f = fixture()
+  const dispose = installDomIntegration(f.ctx, f.bridge)
+  const focused = []
+  f.window.HTMLElement.prototype.focus = function () { focused.push(this) }
+  const key = (target, name, shiftKey = false) => {
+    const event = new window.Event('keydown', { bubbles: true, cancelable: true })
+    Object.assign(event, { key: name, shiftKey })
+    target.dispatchEvent(event)
+    return event
+  }
+  key(f.row, 'F10', true)
+  await tick()
+  const buttons = [...document.querySelectorAll('.dsh-context-menu button')]
+  assert.equal(buttons.length, 3)
+  assert.equal(focused.at(-1), buttons[0])
+  key(buttons[0], 'ArrowDown')
+  assert.equal(focused.at(-1), buttons[1])
+  key(buttons[1], 'End')
+  assert.equal(focused.at(-1), buttons[2])
+  key(buttons[2], 'Escape')
+  assert.equal(document.querySelector('.dsh-context-menu'), null)
+  assert.equal(focused.at(-1), f.row)
+  key(f.row, 'ContextMenu')
+  await tick()
+  assert.equal(document.querySelectorAll('.dsh-context-menu').length, 1)
+  dispose()
+})
+
+test('Escape cancels a delayed row selection before a menu can appear', async () => {
+  const f = fixture()
+  f.row.click = () => { f.select('s2') }
+  const dispose = installDomIntegration(f.ctx, f.bridge)
+  f.row.dispatchEvent(new window.Event('contextmenu', { bubbles: true, cancelable: true }))
+  const escape = new window.Event('keydown', { bubbles: true, cancelable: true })
+  escape.key = 'Escape'
+  f.row.dispatchEvent(escape)
+  await new Promise(resolve => setTimeout(resolve, 300))
+  assert.equal(document.querySelector('.dsh-context-menu'), null)
+  dispose()
+})
+
+test('plugin actions never enter workspace menus or infer missing selected session IDs', async () => {
+  const f = fixture()
+  let checks = 0
+  f.bridge.registerActions('owner', [{ id: 'a', label: '插件动作', getState: () => { checks++; return {} }, run: () => assert.fail() }])
+  assert.equal((await f.open(f.projectRow)).some(button => button.textContent.includes('插件动作')), false)
+  f.row.click = () => {}
+  const buttons = await f.open()
+  const plugin = buttons.find(button => button.textContent.includes('插件动作'))
+  assert.equal(plugin.disabled, true)
+  assert.match(plugin.textContent, /官方会话 ID/)
+  assert.equal(checks, 0)
 })

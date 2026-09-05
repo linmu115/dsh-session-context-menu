@@ -71,3 +71,7 @@ Session Maintenance 为可选协作方，仅删除操作依赖其 0.2.16 的 del
 
 DOM 回归用 linkedom（仅开发依赖），发布客户端不包含它。
 详细变更见 [CHANGELOG](CHANGELOG.md)。
+
+## 菜单动作扩展
+
+源码新增的菜单宿主 API 1 允许插件按 owner 注册会话动作，统一使用官方选中身份及 SCM 菜单生命周期。接口、加载顺序和注销规则见 [接入文档](docs/menu-action-host.md)。旧安装的 0.3.1 不自动具备此接口；Maintenance 消费端将单独接入。
