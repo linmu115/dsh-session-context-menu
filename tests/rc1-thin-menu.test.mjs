@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { parseHTML } from 'linkedom'
-import { createBridge, uniqueByTitle, resolveRow, nativeMenuButton, maintenanceDashboard,
+import { createBridge, uniqueByTitle, resolveRow, nativeMenuButton, deleteMaintenanceSession,
   showEnhancementMenu, installDomIntegration } from '../src/client.js'
 
 function fixture({ duplicate = false } = {}) {
@@ -27,7 +27,7 @@ function fixture({ duplicate = false } = {}) {
       insertBefore: async (...args) => calls.push(['workspaceOrder', ...args]),
       insertSessionBefore: async (...args) => calls.push(['sessionOrder', ...args]),
     },
-    sessions: { list: { getSnapshot: () => ({ byId }), subscribe } },
+    sessions: { list: { getSnapshot: () => ({ byId, current }), subscribe } },
     uiWorkspace: { archiveSession: async id => { calls.push(['archive', id]); snapshot.archivedSessionIds.push(id) } },
   }
   document.body.innerHTML = `
@@ -46,13 +46,16 @@ function fixture({ duplicate = false } = {}) {
     </section>`
   const rows = document.querySelectorAll('[role="treeitem"]')
   const row = rows[1]
+  let current
+  const select = id => { current = id; row.setAttribute('aria-selected', String(id === 's1')) }
+  row.addEventListener('click', event => { if (event.target === row) select('s1') })
   const bridge = createBridge(ctx)
   const lifetime = { busy: false, disposed: false }
-  const open = (target = row) => {
-    assert.equal(showEnhancementMenu(ctx, bridge, target, { clientX: 100, clientY: 100 }, () => {}, lifetime), true)
+  const open = async (target = row) => {
+    assert.equal(await showEnhancementMenu(ctx, bridge, target, { clientX: 100, clientY: 100 }, () => {}, lifetime), true)
     return [...document.querySelector('.dsh-context-menu').querySelectorAll('button')]
   }
-  return { ctx, calls, snapshot, workspace, byId, bridge, row, projectRow: rows[0], open, document, window, listeners }
+  return { ctx, calls, snapshot, workspace, byId, bridge, row, projectRow: rows[0], open, document, window, listeners, select }
 }
 
 test.afterEach(() => { delete globalThis.document })
@@ -61,9 +64,9 @@ const tick = () => new Promise(resolve => setImmediate(resolve))
 test('right-click enhancement delegates to the exact official row button', async () => {
   const f = fixture()
   nativeMenuButton(f.row).addEventListener('click', () => f.calls.push(['official']))
-  const items = f.open()
+  const items = await f.open()
   assert.deepEqual(items.map(item => item.textContent),
-    ['官方会话操作…', '置顶', '在 Maintenance 中管理／删除…'])
+    ['官方会话操作…', '置顶', '删除会话'])
   items[0].click()
   await tick()
   assert.deepEqual(f.calls, [['official']])
@@ -73,14 +76,15 @@ test('right-click enhancement delegates to the exact official row button', async
   assert.equal(f.bridge.createWorktree, undefined)
 })
 
-test('same-title sessions do not acquire guessed IDs; official menu stays available', () => {
+test('same-title sessions resolve through official selected ID, ignoring stale dataset IDs', async () => {
   const f = fixture({ duplicate: true })
   f.row.dataset.dshSessionId = 'stale-id'
   assert.equal(resolveRow(f.ctx, f.row).session, undefined)
-  const items = f.open()
+  const items = await f.open()
   assert.equal(items[0].disabled, false)
-  assert.equal(items[1].disabled, true)
-  assert.equal(items[2].disabled, true)
+  assert.equal(items[1].disabled, false)
+  assert.equal(items[2].disabled, false)
+  assert.equal(resolveRow(f.ctx, f.row).session.id, 's1')
   assert.equal(uniqueByTitle([{ title: 'X' }, { title: 'X' }], 'X', item => item.title), undefined)
 })
 
@@ -93,11 +97,11 @@ test('workspace titles constrain resolution; missing titles never use positional
   assert.equal(resolveRow(f.ctx, f.row).session, undefined)
 })
 
-test('Ungrouped new-session button and unknown DOM are never clicked as a menu', () => {
+test('Ungrouped new-session button and unknown DOM are never clicked as a menu', async () => {
   const f = fixture()
   nativeMenuButton(f.projectRow).remove()
   assert.equal(nativeMenuButton(f.projectRow), undefined)
-  assert.equal(showEnhancementMenu(f.ctx, f.bridge, f.projectRow, {}, () => {}, {}), false)
+  assert.equal(await showEnhancementMenu(f.ctx, f.bridge, f.projectRow, {}, () => {}, {}), false)
 })
 
 test('pinning uses official order APIs; failure leaves local marker unchanged', async () => {
@@ -129,37 +133,46 @@ test('batch archive reports partial progress and does not retry or continue on f
   assert.deepEqual(f.calls, [['archive', 's1']])
 })
 
-test('Maintenance handoff only requests dashboard for native session ID, never deletion', async () => {
+test('Maintenance deletion forwards native ID, validates canonical receipt, then hides via official UI', async () => {
+  const f = fixture()
   let request
-  const url = await maintenanceDashboard('native-session-1', async (endpoint, options) => {
+  const message = await deleteMaintenanceSession(f.ctx, 'native-session-1', async (endpoint, options) => {
     request = { endpoint, ...options }
-    return { ok: true, json: async () => ({ ok: true, url: 'http://127.0.0.1:1799/?launch=test' }) }
+    assert.deepEqual(f.calls, [])
+    return deletionResponse()
   })
-  assert.equal(url, 'http://127.0.0.1:1799/?launch=test')
-  assert.deepEqual(JSON.parse(request.body), { operation: 'dashboard', sessionId: 'native-session-1' })
+  assert.match(message, /已从 Maintenance 删除/)
+  assert.deepEqual(f.calls, [['archive', 'native-session-1']])
+  assert.deepEqual(JSON.parse(request.body), { operation: 'delete-session', sessionId: 'native-session-1' })
   assert.equal(request.endpoint, '/dsh-session-maintenance/api')
   assert.equal(request.headers.authorization, undefined)
-  await assert.rejects(maintenanceDashboard('s1', async () => ({ ok: false, status: 404 })), /未执行删除/)
-  await assert.rejects(maintenanceDashboard('s1', async () => ({
-    ok: true, json: async () => ({ ok: true, url: 'javascript:alert(1)' }),
-  })), /不支持/)
+  await assert.rejects(deleteMaintenanceSession(f.ctx, 's1', async () => ({ ok: false, status: 404, json: async () => ({}) })), /未隐藏/)
+  await assert.rejects(deleteMaintenanceSession(f.ctx, 's1', async () => ({
+    ok: true, json: async () => ({ ok: true, logicalSessionId: 'wrong', deletion: { logicalSessionId: 'ls-1', state: 'deleted' } }),
+  })), /回执/)
+  assert.equal(f.calls.length, 1)
 })
 
-test('Maintenance page is reserved in user gesture and receives returned link', async () => {
+function deletionResponse(state = 'deleted') {
+  return { ok: true, json: async () => ({ ok: true, logicalSessionId: 'ls-1',
+    deletion: { logicalSessionId: 'ls-1', state, pendingOperations: state === 'deleted' ? 0 : 1 } }) }
+}
+
+test('delete menu never opens a window or confirmation and deletes exactly the selected session', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
   const f = fixture()
   const events = []
-  const page = { opener: {}, location: { replace: url => events.push(['navigate', url]) }, close: () => events.push(['close']) }
-  f.window.open = (...args) => { events.push(['open', ...args]); return page }
+  f.window.open = f.window.confirm = () => { throw new Error('Popup must not be used') }
   const previousFetch = globalThis.fetch
-  globalThis.fetch = async () => {
-    events.push(['fetch'])
-    return { ok: true, json: async () => ({ ok: true, url: 'http://127.0.0.1:1799/?launch=test' }) }
+  globalThis.fetch = async (_url, request) => {
+    events.push(JSON.parse(request.body))
+    return deletionResponse()
   }
   try {
-    f.open()[2].click()
+    ;(await f.open())[2].click()
     await tick()
-    assert.deepEqual(events.map(item => item[0]), ['open', 'fetch', 'navigate'])
-    assert.equal(page.opener, null)
+    assert.deepEqual(events, [{ operation: 'delete-session', sessionId: 's1' }])
+    assert.deepEqual(f.calls, [['archive', 's1']])
   } finally { globalThis.fetch = previousFetch }
 })
 
@@ -173,6 +186,7 @@ test('right-click attaches once, Shift passes through and disposal removes liste
   assert.equal(shifted.defaultPrevented, false)
   const normal = new f.window.Event('contextmenu', { bubbles: true, cancelable: true })
   f.row.dispatchEvent(normal)
+  await tick()
   assert.equal(normal.defaultPrevented, true)
   assert.equal(document.querySelectorAll('.dsh-context-menu').length, 1)
   cleanup()
@@ -187,7 +201,7 @@ test('cancel batch archive performs no mutations', async () => {
   const f = fixture()
   let confirms = 0
   f.window.confirm = () => { confirms++; return false }
-  f.open(f.projectRow)[2].click()
+  ;(await f.open(f.projectRow))[2].click()
   await tick()
   assert.equal(confirms, 1)
   assert.deepEqual(f.calls, [])
@@ -196,7 +210,7 @@ test('cancel batch archive performs no mutations', async () => {
 test('recycled row cannot pin a different session after menu creation', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const f = fixture()
-  const items = f.open()
+  const items = await f.open()
   f.row.querySelector('.rc1_title').textContent = 'Second'
   items[1].click()
   await tick()
@@ -205,25 +219,22 @@ test('recycled row cannot pin a different session after menu creation', async t 
   assert.match(document.querySelector('.dsh-context-toast').textContent, /已变更/)
 })
 
-test('unavailable Maintenance closes reserved page and performs no delete', async t => {
+test('unavailable Maintenance leaves the native row visible and reports failure', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const f = fixture()
   const events = []
-  f.window.open = () => ({
-    opener: {},
-    location: { replace: () => events.push('navigate') },
-    close: () => events.push('close'),
-  })
+  f.window.open = () => { throw new Error('Popup must not be used') }
   const previousFetch = globalThis.fetch
   globalThis.fetch = async (_endpoint, request) => {
     events.push(JSON.parse(request.body).operation)
-    return { ok: false, status: 503 }
+    return { ok: false, status: 503, json: async () => ({}) }
   }
   try {
-    f.open()[2].click()
+    ;(await f.open())[2].click()
     await tick()
-    assert.deepEqual(events, ['dashboard', 'close'])
-    assert.match(document.querySelector('.dsh-context-toast').textContent, /未执行删除/)
+    assert.deepEqual(events, ['delete-session'])
+    assert.deepEqual(f.calls, [])
+    assert.match(document.querySelector('.dsh-context-toast').textContent, /未隐藏/)
   } finally { globalThis.fetch = previousFetch }
 })
 
@@ -238,7 +249,36 @@ test('dispose cancels queued decoration and a fresh install has one menu', async
   await tick()
   const event = new f.window.Event('contextmenu', { bubbles: true, cancelable: true })
   f.row.dispatchEvent(event)
+  await tick()
   assert.equal(document.querySelectorAll('.dsh-context-menu').length, 1)
   assert.equal(document.querySelectorAll('.dsh-context-pin-marker').length, 1)
   second()
+})
+
+test('pending deletion and post-receipt UI failure are reported without claiming an unconfirmed delete', async () => {
+  const f = fixture()
+  assert.match(await deleteMaintenanceSession(f.ctx, 's1', async () => deletionResponse('pending-delete')), /等待现有写入收尾/)
+  f.ctx.uiWorkspace.archiveSession = async () => { throw new Error('offline') }
+  assert.match(await deleteMaintenanceSession(f.ctx, 's2', async () => deletionResponse()), /已从 Maintenance 删除.*当前列表未隐藏.*offline/)
+})
+
+test('switching to another same-title session invalidates an already opened destructive menu', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const f = fixture({ duplicate: true })
+  const items = await f.open()
+  f.select('s2')
+  items[2].click()
+  await tick()
+  assert.deepEqual(f.calls, [])
+  assert.match(document.querySelector('.dsh-context-toast').textContent, /已变更/)
+})
+
+test('missing official selection explains disabled enhancements instead of guessing by title', async () => {
+  const f = fixture()
+  f.ctx.sessions.list.getSnapshot = () => ({ byId: f.byId })
+  const items = await f.open()
+  assert.equal(items[0].disabled, false)
+  assert.equal(items[1].disabled, true)
+  assert.equal(items[2].disabled, true)
+  assert.match(document.querySelector('[role="status"]').textContent, /官方会话 ID/)
 })

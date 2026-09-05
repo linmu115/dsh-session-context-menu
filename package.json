@@ -1,7 +1,7 @@
 {
   "name": "dsh-session-context-menu",
-  "version": "0.3.0",
-  "description": "Thin RC1 context-menu enhancement: official menus, pinning, batch archive and Maintenance management.",
+  "version": "0.3.1",
+  "description": "Thin RC1 context-menu enhancement: official menus, exact selected identity, pinning and Maintenance deletion.",
   "type": "module",
   "license": "MIT",
   "repository": {

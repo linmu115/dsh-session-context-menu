@@ -259,9 +259,13 @@ function resolveRow(ctx, row) {
   const projectRow = section && [...section.querySelectorAll('[role="treeitem"]')]
     .find(item => classContains(item, '_projectRow'))
   const workspace = projectRow && uniqueByTitle(workspaces, rowTitle(projectRow), workspaceTitleOf)
-  const all = sessionItems(sessionsSnapshot(ctx)).filter(item => !item.blank)
+  const snapshot = sessionsSnapshot(ctx)
+  const all = sessionItems(snapshot).filter(item => !item.blank)
   const candidates = workspace ? all.filter(item => workspace.sessionIds.includes(sessionIdOf(item))) : all
-  const session = uniqueByTitle(candidates, rowTitle(row), sessionTitleOf)
+  const selected = row.getAttribute('aria-selected') === 'true'
+    ? candidates.find(item => sessionIdOf(item) === snapshot.current && sessionTitleOf(item) === rowTitle(row))
+    : undefined
+  const session = selected ?? uniqueByTitle(candidates, rowTitle(row), sessionTitleOf)
   const owners = session ? workspaces.filter(item => item.sessionIds.includes(sessionIdOf(session))) : []
   return { session, workspace: workspace ?? (owners.length === 1 ? owners[0] : undefined) }
 }
@@ -288,19 +292,45 @@ function decorateRows(ctx, bridge) {
   }
 }
 
-async function maintenanceDashboard(sessionId, fetchImpl = fetch) {
-  // No raw Engine credentials and no delete mutation; use Maintenance's own UI.
+async function deleteMaintenanceSession(ctx, sessionId, fetchImpl = fetch) {
+  // Only the host resolves native ID -> current-run canonical ID. No popup,
+  // browser Engine token, direct native deletion, or Codex source write.
   const response = await fetchImpl('/dsh-session-maintenance/api', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ operation: 'dashboard', sessionId }),
+    body: JSON.stringify({ operation: 'delete-session', sessionId }),
   })
-  if (!response.ok) throw new Error(`Maintenance 未就绪（HTTP ${response.status}），未执行删除`)
   const result = await response.json()
-  if (result.ok !== true || typeof result.url !== 'string') throw new Error(result.error || 'Maintenance 未返回管理页链接')
-  const url = new URL(result.url)
-  if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Maintenance 返回了不支持的链接')
-  return url.href
+  if (!response.ok || result.ok !== true) throw new Error(result.error || `Maintenance 删除未确认（HTTP ${response.status}），未隐藏会话`)
+  const receipt = result.deletion
+  if (!receipt || typeof result.logicalSessionId !== 'string' || receipt.logicalSessionId !== result.logicalSessionId ||
+      !['deleted', 'pending-delete'].includes(receipt.state)) throw new Error('Maintenance 未返回有效删除回执；未隐藏会话，请检查状态')
+  const message = receipt.state === 'deleted' ? '已从 Maintenance 删除会话；Codex 原始会话不变'
+    : 'Maintenance 已登记删除，等待现有写入收尾；Codex 原始会话不变'
+  try {
+    if (typeof ctx?.uiWorkspace?.archiveSession !== 'function') throw new Error('官方列表刷新接口未就绪')
+    await ctx.uiWorkspace.archiveSession(sessionId)
+    return message
+  } catch (error) {
+    return `${message}。当前列表未隐藏，请刷新：${error?.message ?? error}`
+  }
+}
+
+async function selectSessionRow(ctx, row, lifetime) {
+  // RC1 exposes no row ID. Its native onClick selects the exact node.id in the
+  // public Session Controller; wait only for aria-selected to confirm that row.
+  row.click()
+  const expectedId = sessionsSnapshot(ctx).current
+  if (!expectedId) return undefined
+  for (let attempt = 0; attempt < 16; attempt++) {
+    if (!row.isConnected || lifetime.disposed || sessionsSnapshot(ctx).current !== expectedId) return undefined
+    if (row.getAttribute('aria-selected') === 'true') {
+      const target = resolveRow(ctx, row)
+      return sessionIdOf(target.session) === expectedId ? target : undefined
+    }
+    await new Promise(resolve => setTimeout(resolve, 16))
+  }
+  return undefined
 }
 
 function showToast(message, kind = 'ok') {
@@ -331,15 +361,17 @@ function makeMenuItem(label, action, options = {}) {
   return button
 }
 
-function showEnhancementMenu(ctx, bridge, row, event, scheduleDecorate, lifetime) {
-  const button = nativeMenuButton(row)
-  if (!button) return false
+async function showEnhancementMenu(ctx, bridge, row, event, scheduleDecorate, lifetime) {
+  if (!nativeMenuButton(row)) return false
   const workspaceRow = classContains(row, '_projectRow')
-  const target = resolveRow(ctx, row)
+  const selectedTarget = workspaceRow ? undefined : await selectSessionRow(ctx, row, lifetime)
+  if (!row.isConnected || lifetime.disposed) return false
+  const target = workspaceRow ? resolveRow(ctx, row) : (selectedTarget ?? {})
   const currentTarget = () => {
     if (!row.isConnected || lifetime.disposed) throw new Error('列表已刷新，请重新打开菜单')
     const current = resolveRow(ctx, row)
-    if (sessionIdOf(current.session) !== sessionIdOf(target.session) ||
+    if ((!workspaceRow && (row.getAttribute('aria-selected') !== 'true' || sessionsSnapshot(ctx).current !== sessionIdOf(target.session))) ||
+        sessionIdOf(current.session) !== sessionIdOf(target.session) ||
         workspaceIdOf(current.workspace) !== workspaceIdOf(target.workspace)) {
       throw new Error('会话或工作区已变更，请重新打开菜单')
     }
@@ -359,8 +391,9 @@ function showEnhancementMenu(ctx, bridge, row, event, scheduleDecorate, lifetime
     }, { disabled: !enabled }))
   }
   item(workspaceRow ? '官方工作区操作…' : '官方会话操作…', () => {
-    currentTarget()
-    if (!button.isConnected || nativeMenuButton(row) !== button) throw new Error('官方菜单已刷新，请重试')
+    if (!row.isConnected || lifetime.disposed) throw new Error('官方菜单已刷新，请重试')
+    const button = nativeMenuButton(row)
+    if (!button) throw new Error('官方菜单已刷新，请重试')
     button.click() // Official dialogs, fork boundary and archive behavior.
   })
   if (workspaceRow) {
@@ -386,18 +419,19 @@ function showEnhancementMenu(ctx, bridge, row, event, scheduleDecorate, lifetime
       const pinned = await bridge.pinSession(workspaceIdOf(current.workspace), sessionIdOf(current.session))
       if (!lifetime.disposed) showToast(pinned ? '聊天已移到顶部' : '已取消置顶标记')
     }, !!session && !!target.workspace)
-    item('在 Maintenance 中管理／删除…', async () => {
+    item('删除会话', async () => {
       const current = currentTarget()
-      // Reserve in the user gesture to avoid async popup blocking.
-      const page = window.open('about:blank', '_blank')
-      if (!page) throw new Error('请允许弹出窗口后重试；未执行删除')
-      page.opener = null
-      try {
-        const url = await maintenanceDashboard(sessionIdOf(current.session))
-        if (lifetime.disposed) { page.close(); return }
-        page.location.replace(url)
-      } catch (error) { page.close(); throw error }
+      const message = await deleteMaintenanceSession(ctx, sessionIdOf(current.session))
+      if (!lifetime.disposed) showToast(message)
     }, !!session)
+  }
+  if (workspaceRow ? !target.workspace : !target.session) {
+    const reason = document.createElement('div')
+    reason.setAttribute('role', 'status')
+    reason.style.cssText = 'max-width:280px;padding:8px 10px;opacity:.8'
+    reason.textContent = workspaceRow ? '工作区身份不唯一；可使用上方官方操作。'
+      : '未能确认此行的官方会话 ID；请先左键选中后重试。'
+    menu.appendChild(reason)
   }
   placeAndOpenMenu(menu, event.clientX, event.clientY)
   return true
@@ -433,9 +467,13 @@ function installDomIntegration(ctx, bridge) {
     const workspaceRow = classContains(row, '_projectRow')
     const sessionRow = classContains(row, '_sessionRow')
     if (!workspaceRow && !sessionRow) return
-    if (!showEnhancementMenu(ctx, bridge, row, event, scheduleDecorate, lifetime)) return
+    if (!nativeMenuButton(row)) return
     event.preventDefault()
     event.stopPropagation()
+    lifetime.busy = true
+    void showEnhancementMenu(ctx, bridge, row, event, scheduleDecorate, lifetime)
+      .catch(error => { if (!lifetime.disposed) showToast(error?.message ?? error, 'error') })
+      .finally(() => { lifetime.busy = false })
   }
   const onPointerDown = event => {
     const menu = document.querySelector('.dsh-context-menu')
@@ -493,5 +531,5 @@ export function apply(ctx) {
   if (typeof ctx?.effect === 'function') ctx.effect(() => dispose)
 }
 
-export { createBridge, uniqueByTitle, resolveRow, nativeMenuButton, maintenanceDashboard, showEnhancementMenu, installDomIntegration }
+export { createBridge, uniqueByTitle, resolveRow, nativeMenuButton, deleteMaintenanceSession, showEnhancementMenu, installDomIntegration }
 

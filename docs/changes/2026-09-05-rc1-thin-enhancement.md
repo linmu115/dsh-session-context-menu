@@ -18,12 +18,17 @@ The installed release bundle, not a moving master branch, was the API baseline.
 
 Use its existing POST /dsh-session-maintenance/api:
 
-    { operation: "dashboard", sessionId: "<native DSH ID>" }
+    { operation: "delete-session", sessionId: "<native DSH ID>" }
 
-Maintenance resolves the native ID and issues the management URL. This plugin
-does not implement delete, unlink, checkpoint, source mutation, or raw Engine
-authentication. If Maintenance is absent/offline the failure is visible and no
-deletion occurs. The menu label deliberately does not promise direct deletion.
+Maintenance 0.2.16 resolves the native ID within its server-attested run and
+performs canonical deletion using the existing checkpoint/tombstone policy.
+SCM only hides the native row after a matching deletion receipt. Pending writes
+and a later list-refresh failure have distinct truthful messages. No popup is
+opened. SCM never handles Engine credentials or modifies Codex source files.
+
+RC1 row selection is synchronous in Session Controller; aria-selected can follow
+on the next render. SCM invokes the official row click and waits at most 256 ms
+for that confirmation. Unknown/changed identity never enables a guessed delete.
 
 ## Focused acceptance points
 
@@ -33,10 +38,12 @@ deletion occurs. The menu label deliberately does not promise direct deletion.
    initial move-to-top; subsequent sorting remains under official control.
 3. On a disposable workspace, cancel batch archive (no calls), then confirm
    (only confirmed, still-owned, unarchived IDs are archived).
-4. Manage/delete in Maintenance -> correct management page, no immediate delete.
-   Backend failures must not leave an empty reserved page.
-5. Same-title rows / Ungrouped / Shift+right-click -> no guessed-ID mutation
-   or accidental new session. Disable/re-enable -> no duplicate menu handlers.
+4. On a disposable Maintenance test session, Delete -> canonical tombstone and
+   hidden native row without popup. Verify the ID in Maintenance's status entry.
+   An offline/mismatched response must not hide the row.
+5. Same-title rows -> right-click selects the actual row and enables ID actions.
+   Switch selection before using a stale menu -> no mutation. Unknown identity
+   explains the disabled entries; Ungrouped/Shift/disposal behavior stays intact.
 
 Only drill into a failing point. Do not bulk-delete real sessions to test.
-No current Profile replacement or service restart is performed by this commit.
+Automated checks pass; installed-profile acceptance is performed by the user.

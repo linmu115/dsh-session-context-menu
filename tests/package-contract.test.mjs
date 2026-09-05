@@ -8,7 +8,7 @@ test("publishes a version-open workspace peer contract", async () => {
   assert.deepEqual(new Set(Object.values(packageJson.peerDependencies)), new Set(["*"]));
 });
 
-test("client stays thin and does not ship delete/worktree mutation paths", async () => {
+test("client delegates canonical deletion to Maintenance and does not ship native delete/worktree paths", async () => {
   const source = await readFile(new URL("../src/client.js", import.meta.url), "utf8");
   const host = await readFile(new URL("../lib/index.js", import.meta.url), "utf8");
   const built = await readFile(new URL("../lib/client.js", import.meta.url), "utf8");
@@ -18,6 +18,7 @@ test("client stays thin and does not ship delete/worktree mutation paths", async
   }
   assert.ok(!host.includes("webServer"));
   assert.ok(!host.includes("workspaceRegistry"));
-  assert.ok(built.includes("operation: 'dashboard'"));
+  assert.ok(built.includes("operation: 'delete-session'"));
+  assert.ok(!built.includes("window.open("));
   assert.ok(built.includes("ctx.uiWorkspace.archiveSession(id)"));
 });

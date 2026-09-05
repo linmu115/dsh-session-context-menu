@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.1 — 2026-09-05
+
+- Replace the popup-based Maintenance handoff with direct `delete-session`.
+  Maintenance resolves the native ID within the active projection run, creates
+  its existing delete checkpoint/tombstone, and returns a deletion receipt.
+  Only after that receipt does SCM archive the current native row to hide it.
+  No browser popup/confirmation, direct file deletion, or Codex source mutation.
+- Preserve pending-delete semantics and report post-receipt UI failures separately
+  from canonical deletion. Do not hide a row when the Engine request fails.
+- Resolve same-title sessions through the official row click and public
+  Session Controller selection, confirmed by aria-selected. Right-click selects
+  that conversation. Never read React internals or guess from stale dataset IDs.
+- Invalidate destructive actions when selection changes after menu creation;
+  show a reason when identity cannot be established instead of silent disabling.
+- Add targeted selected-ID, stale-menu, no-popup and deletion-receipt regressions.
+  User click acceptance remains pending; no model/compaction or Launcher changes.
+
 ## 0.3.0 — 2026-09-05
 
 ### RC1 thin context-menu enhancement
