@@ -7,7 +7,7 @@ const source = await readFile(resolve(root, 'src/client.js'), 'utf8')
 const body = source
   .replace('export const inject =', 'const inject =')
   .replace('export function apply', 'function apply')
-  .replace(/\nexport \{ createBridge \}\s*$/u, '\n')
+  .replace(/\nexport \{[^}]+\}\s*$/u, '\n')
 
 const bundled = [
   'window.__ModuleLoader__.load({ id: "dsh-session-context-menu", factory: (require) => {',

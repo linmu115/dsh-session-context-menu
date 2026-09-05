@@ -1,9 +1,13 @@
 {
   "name": "dsh-session-context-menu",
-  "version": "0.2.2",
-  "description": "Right-click session and workspace actions for the official DeepSeek Harness web profile.",
+  "version": "0.3.0",
+  "description": "Thin RC1 context-menu enhancement: official menus, pinning, batch archive and Maintenance management.",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/linmu115/dsh-session-context-menu.git"
+  },
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
@@ -32,12 +36,17 @@
     "cordis.patch.yml",
     "scripts",
     "README.md",
+    "CHANGELOG.md",
+    "docs",
     "LICENSE"
   ],
   "scripts": {
     "build": "node scripts/build.mjs",
     "check": "node --check lib/index.js && node --check lib/client.js",
     "test": "node --test tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "linkedom": "^0.18.12"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-client-ui-workspace": "*"

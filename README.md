@@ -1,57 +1,68 @@
 # dsh-session-context-menu
 
-为 DeepSeek Harness（DSH）Web 会话列表和工作区补充右键菜单。
+DSH **0.1.2-rc.1** 的薄右键增强插件，不再重复维护官方已有的会话管理界面。
 
-插件直接运行在官方 DSH profile 中，不依赖外置桌面壳。当前版本已在官方 DSH `0.1.1-rc.2` 的 `web` profile 中验证。
+## 当前功能（0.3.0）
 
-## 会话右键
+### 会话右键
 
-- 置顶/取消置顶（按会话 ID 保存）
-- 重命名
-- 创建分支聊天
-- 归档聊天
-- 调用 `dsh-session-manager` 的带确认删除
+- **官方会话操作…**：打开所点击行的官方菜单，使用 DSH 自己的重命名、
+  分支和归档交互。不是另一套分支或会话持久化实现。
+- **置顶／取消置顶**：按 ID 保存本地标记，置顶时调用官方接口移到顶部。
+  后续手动排序、按最近更新排序仍由 DSH 管理，不强行固定位置。
+- **在 Maintenance 中管理／删除…**：通过已安装的 Session Maintenance
+  代理打开目标会话的维护页。删除由维护页确认执行，右键插件不直接删会话。
 
-## 工作区右键
+### 工作区右键
 
-- 置顶/取消置顶（按工作区 ID 保存，并调用 DSH 官方顺序接口移到顶部）
-- 编辑：修改名称并显示只读文件夹路径
-- 归档聊天：归档该工作区中全部未归档聊天
-- 创建永久工作树：调用已启用的 `dsh-worktree`，创建后登记为 `[worktree] 名称` 工作区
-- 移除项目：只移除 DSH 工作区登记，保留文件夹与会话记录
+- **官方工作区操作…**：打开官方重命名／移除工作区菜单，保留官方确认边界。
+- **置顶／取消置顶**：保留已有 ID 置顶记录和官方排序调用。
+- **归档此工作区全部聊天…**：先确认，仅归档确认时已列出的未归档会话；
+  新到达、已迁出或已归档会话不处理。中途失败会显示已完成数量。
 
-## 运行方式与依赖边界
+## 已移除的重复或失效能力
 
-插件由两部分组成：
+- 自建的重命名表单和 fork/archive/workspace-delete 处理逻辑。
+- 旧 window.__dshSessionManager 删除桥。
+- 依赖未配置 dsh-worktree 的永久工作树菜单与私有 Host HTTP 接口。
 
-- 客户端使用 DSH 提供的模块加载器以及 `workspaces` / `sessions` 客户端服务，在官方会话侧栏上增加菜单，不覆盖 `@deepseek-ai/dsh-client-ui-workspace`。
-- Host 端使用 DSH 的 `webServer` / `workspaceRegistry` 服务，为永久工作树操作提供本机同源接口。
+Host 入口不再请求 webServer、workspaceRegistry 或文件系统操作权限。
 
-以下能力是可选的插件间协作：
+## 安全与适配边界
 
-- “创建永久工作树”需要启用 `dsh-worktree`；未启用时，只有这一个菜单项无法完成操作。
-- “删除聊天”调用 `dsh-session-manager` 暴露的确认删除桥；桥未就绪时，其他菜单功能仍可使用。
+- 仅面向 RC1，不维护旧 DSH 的兼容分支；peer 仍为 *，不硬锁版本。
+- RC1 官方行未暴露稳定 ID，插件只在标题及归属能唯一匹配时启用 ID 操作。
+  不根据列表位置、旧 DOM 属性或第一个同名会话猜测 ID。
+- 同名/无法定位时，官方菜单仍可用；置顶和维护跳转可能不可用。
+- **Shift + 右键**绕过本插件，让浏览器或其他插件处理。
+- 无法识别官方菜单按钮时不截获右键，尤其不会把未分组的“新建会话”当菜单。
+- Maintenance 没装或离线时会提示失败，不走旧删除接口、不执行删除。
+- 不修改 Codex 真源、Maintenance 内容、Launcher、模型或上下文压缩配置。
 
-会话和工作区定位会识别官方 DSH 侧栏的树节点及其 UI 类名片段。DSH 大版本若重构会话侧栏 DOM，可能需要更新这层适配，但不需要引入桌面壳。
+## 安装与验收
 
-## 安装
+安装构建包，并将 dsh-session-context-menu 放入目标 Profile 的
+dsh.profile.bundles。包更新后按 DSH 插件更新流程重载对应 Profile。
+Session Maintenance 为可选协作方，仅维护页入口依赖它。
 
-将插件包安装到目标 DSH profile，并把 `dsh-session-context-menu` 加入该 profile 的 bundles。安装、更新或启用状态发生变化后，重启对应的 DSH profile。
-
-不同 DSH profile 的安装状态和浏览器本地置顶数据彼此独立。
+右键菜单／官方菜单切换、批量归档及维护页跳转需在实际 RC1 页面人工验收。
+针对性步骤见 [验收与边界](docs/changes/2026-09-05-rc1-thin-enhancement.md)。
 
 ## 本地数据
 
-置顶状态保存在浏览器本地存储中，键为：
+继续使用既有 localStorage 键，不迁移或清空已有标记：
 
-- `dsh.session.context-menu.pins.v1`
-- `dsh.workspace.context-menu.pins.v1`
+- dsh.session.context-menu.pins.v1
+- dsh.workspace.context-menu.pins.v1
 
-## 开发与验证
+数据按浏览器来源隔离；这不是 Maintenance 真源中的跨浏览器置顶关系。
 
-```powershell
-npm run build
-npm run check
-npm test
-```
+## 开发
 
+    pnpm install --config.auto-install-peers=false
+    pnpm build
+    pnpm check
+    pnpm test
+
+DOM 回归用 linkedom（仅开发依赖），发布客户端不包含它。
+详细变更见 [CHANGELOG](CHANGELOG.md)。
