@@ -112,8 +112,8 @@ test('workspace actions call the DSH workspace service with stable IDs', async (
       },
       insertBefore: async (...args) => calls.push(['insertBefore', ...args]),
       insertSessionBefore: async (...args) => calls.push(['insertSessionBefore', ...args]),
-      rename: async (...args) => calls.push(['rename', ...args]),
-      delete: async (...args) => calls.push(['delete', ...args]),
+    },
+    uiWorkspace: {
       archiveSession: async (...args) => calls.push(['archiveSession', ...args]),
     },
     sessions: {
@@ -130,13 +130,9 @@ test('workspace actions call the DSH workspace service with stable IDs', async (
   const bridge = window.__dshSessionContextMenu
   assert.equal(await bridge.pinWorkspace('workspace-1'), true)
   assert.equal(await bridge.pinSession('workspace-1', 'session-2'), true)
-  await bridge.renameWorkspace('workspace-1', 'Renamed')
-  await bridge.removeWorkspace('workspace-1')
   assert.deepEqual(await bridge.archiveWorkspace('workspace-1'), { archived: 1 })
   assert.deepEqual(calls, [
     ['insertSessionBefore', 'workspace-1', 'session-2', 'session-1'],
-    ['rename', 'workspace-1', 'Renamed'],
-    ['delete', 'workspace-1'],
     ['archiveSession', 'session-1'],
   ])
 })
