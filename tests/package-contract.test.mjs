@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("publishes a version-open workspace peer contract", async () => {
+test("publishes a RC2 workspace peer contract", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
-  assert.match(packageJson.version, /^\d+\.\d+\.\d+$/);
-  assert.deepEqual(new Set(Object.values(packageJson.peerDependencies)), new Set(["*"]));
+  assert.match(packageJson.version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+  assert.deepEqual(new Set(Object.values(packageJson.peerDependencies)), new Set(["0.1.5-rc.2"]));
 });
 
 test("client delegates canonical deletion to Maintenance and does not ship native delete/worktree paths", async () => {

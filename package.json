@@ -1,7 +1,7 @@
 {
   "name": "dsh-session-context-menu",
-  "version": "0.3.2",
-  "description": "Thin RC1 context-menu enhancement: official menus, exact selected identity, pinning and Maintenance deletion.",
+  "version": "0.3.3-rc2.1",
+  "description": "Thin DSH 0.1.5 RC2 context-menu enhancement: official menus, exact selected identity, pinning and Maintenance deletion.",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -15,7 +15,7 @@
     "./package.json": "./package.json"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=24.7.0"
   },
   "dsh": {
     "bundle": {
@@ -49,7 +49,7 @@
     "linkedom": "^0.18.12"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-client-ui-workspace": "*"
+    "@deepseek-ai/dsh-client-ui-workspace": "0.1.5-rc.2"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-client-ui-workspace": {
