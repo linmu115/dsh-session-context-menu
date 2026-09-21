@@ -5,6 +5,12 @@ const STYLE_ID = 'dsh-session-context-menu/client.css'
 const menuRegistries = new WeakMap()
 const HOST_READY_EVENT = 'dsh-session-context-menu:ready'
 const HOST_UNAVAILABLE_EVENT = 'dsh-session-context-menu:unavailable'
+const MAINTENANCE_BRIDGE_KEY = 'dshSessionMaintenance'
+const MAINTENANCE_BRIDGE_API_VERSION = 1
+const MAINTENANCE_JOIN_LABEL = '将当前工作区加入 sessionmaintenance'
+const MAINTENANCE_BRIDGE_MISSING = `维护插件桥不可用：未找到 globalThis.${MAINTENANCE_BRIDGE_KEY}（apiVersion ${MAINTENANCE_BRIDGE_API_VERSION}）`
+const MAINTENANCE_JOINED = '已将当前工作区加入 sessionmaintenance'
+const MAINTENANCE_ALREADY_JOINED = '当前工作区已在 sessionmaintenance 中，无需重复加入'
 
 function createMenuRegistry() {
   const owners = new Map()
@@ -366,6 +372,46 @@ async function deleteMaintenanceSession(ctx, sessionId, fetchImpl = fetch) {
   }
 }
 
+// This plugin only consumes the Maintenance bridge; it never provides it and
+// never calls a Maintenance HTTP route for this action. The global may be
+// absent, installed after this plugin loads, or replaced at any time, so the
+// handle and its apiVersion are re-read on every call and never cached.
+function maintenanceBridge() {
+  const candidate = globalThis[MAINTENANCE_BRIDGE_KEY]
+  if (candidate === null || candidate === undefined) return undefined
+  if (typeof candidate !== 'object' && typeof candidate !== 'function') return undefined
+  if (candidate.apiVersion !== MAINTENANCE_BRIDGE_API_VERSION) return undefined
+  if (typeof candidate.joinWorkspace !== 'function') return undefined
+  return candidate
+}
+
+function maintenanceJoinFailure(code) {
+  if (code === 'engine-unreachable') return '维护引擎不可达，未能加入 sessionmaintenance'
+  if (code === 'engine-error') return '维护引擎错误或正忙，未能加入 sessionmaintenance'
+  if (code === 'invalid-input') return '工作区信息无效，未能加入 sessionmaintenance'
+  if (code === 'joined' || code === 'already-joined') return '维护插件未确认加入成功'
+  return `维护插件返回未知结果（${code === '' ? '缺少 code' : code}），未能加入 sessionmaintenance`
+}
+
+async function joinWorkspaceWithMaintenance(input) {
+  const bridge = maintenanceBridge()
+  if (bridge === undefined) throw new Error(MAINTENANCE_BRIDGE_MISSING)
+  let result
+  try {
+    result = await bridge.joinWorkspace({ ...input })
+  } catch (error) {
+    throw new Error(`维护插件调用失败：${error?.message ?? error}`)
+  }
+  if (result === null || typeof result !== 'object') throw new Error('维护插件返回了无法识别的结果，未能确认加入结果')
+  const code = String(result.code ?? '')
+  const message = String(result.message ?? '').trim()
+  if (result.ok === false) throw new Error(message || maintenanceJoinFailure(code))
+  if (code === 'joined') return MAINTENANCE_JOINED
+  if (code === 'already-joined') return MAINTENANCE_ALREADY_JOINED
+  // engine-unreachable / engine-error / invalid-input / unknown codes all fail.
+  throw new Error(message || maintenanceJoinFailure(code))
+}
+
 async function selectSessionRow(ctx, row, lifetime) {
   // RC1 exposes no row ID. Its native onClick selects the exact node.id in the
   // public Session Controller; wait only for aria-selected to confirm that row.
@@ -465,6 +511,19 @@ async function showEnhancementMenu(ctx, bridge, row, event, scheduleDecorate, li
       const result = await bridge.archiveWorkspace(workspaceIdOf(current), ids)
       if (!lifetime.disposed) showToast(`已归档 ${result.archived} 个聊天`)
     }, !!workspace)
+    // Workspace-only cross-plugin hand-off: the Maintenance plugin owns the
+    // bridge and the mapping; this menu only renders the entry point.
+    const maintenanceReady = maintenanceBridge() !== undefined
+    item(MAINTENANCE_JOIN_LABEL, async () => {
+      const current = currentTarget().workspace
+      const message = await joinWorkspaceWithMaintenance({
+        workspaceId: workspaceIdOf(current),
+        workspaceName: workspaceTitleOf(current),
+        workspacePath: String(current.path ?? current.cwd ?? ''),
+      })
+      if (!lifetime.disposed) showToast(message)
+    }, !!workspace && maintenanceReady)
+    if (!maintenanceReady) menu.lastElementChild.title = MAINTENANCE_BRIDGE_MISSING
   } else {
     const session = target.session
     item(session && bridge.isPinned(sessionIdOf(session)) ? '取消置顶' : '置顶', async () => {
@@ -650,5 +709,5 @@ export function apply(ctx) {
   if (typeof ctx?.effect === 'function') ctx.effect(() => dispose)
 }
 
-export { createBridge, uniqueByTitle, resolveRow, nativeMenuButton, deleteMaintenanceSession, showEnhancementMenu, installDomIntegration }
+export { createBridge, uniqueByTitle, resolveRow, nativeMenuButton, deleteMaintenanceSession, showEnhancementMenu, installDomIntegration, maintenanceBridge, joinWorkspaceWithMaintenance }
 

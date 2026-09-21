@@ -1,6 +1,6 @@
 {
   "name": "dsh-session-context-menu",
-  "version": "0.3.3-rc2.1",
+  "version": "0.3.4-rc2.1",
   "description": "Thin DSH 0.1.5 RC2 context-menu enhancement: official menus, exact selected identity, pinning and Maintenance deletion.",
   "type": "module",
   "license": "MIT",
