@@ -311,7 +311,7 @@ test('ready supports consumers arriving before or after host, and reload invalid
   apply(f.ctx)
   const first = window.__dshSessionContextMenu
   assert.equal(first.menuApiVersion, 1)
-  assert.equal(first.version, 3)
+  assert.equal(first.version, 4)
   first.registerActions('late', [{ id: 'b', label: '稍后加载', run: () => {} }])
   const life = { busy: false, disposed: false }
   await showEnhancementMenu(f.ctx, first, f.row, { clientX: 0, clientY: 0 }, () => {}, life)

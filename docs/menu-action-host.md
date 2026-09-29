@@ -1,9 +1,10 @@
 # Session menu action host, API 1
 
-The existing `window.__dshSessionContextMenu` bridge remains `version: 3` with its
-pinning and workspace methods. `menuApiVersion: 1` adds a session-menu extension
-point. This source change keeps package version 0.3.1 for coordinated release;
-the previously installed 0.3.1 package does not automatically have this API.
+The `window.__dshSessionContextMenu` bridge is `version: 4` in the DSH 0.2
+candidate. `menuApiVersion: 1` and its registration/lifetime contract are unchanged.
+On the native host, `togglePin(sessionId)` now returns a Promise of the resulting
+pin state; callers must await it. `pinSession` was already asynchronous.
+Pin reads use the host snapshot and never import legacy local markers.
 
 ## Registration
 
@@ -26,8 +27,8 @@ action set and aborts its old invocation signals. The returned disposer is
 idempotent; an old disposer cannot remove that owner's newer registration.
 
 The target is frozen `{ nativeSessionId: string, workspaceId: string | null }`.
-The host obtains the official selected session ID and rechecks the row,
-selection and workspace immediately before invocation. It accepts no
+The host obtains the native row key, validates the public session snapshot, and
+rechecks the row identity and workspace immediately before invocation. It accepts no
 consumer-supplied logical ID and never resolves a session from a title. A
 missing session identity disables plugin actions. Workspace menus retain their
 existing behavior and do not receive these session actions.
@@ -93,6 +94,6 @@ session actions in registration order. Shift-right-click still passes through.
 Context Menu key and Shift+F10 open from the focused row. Arrow keys, Home and
 End move between enabled buttons; native button Enter/Space activation remains
 available. Escape closes and returns focus to the row; Tab dismisses the menu.
-Escape or outside pointer activity during delayed row selection prevents a
-late menu from appearing. Unload disconnects observers/list subscriptions,
+Right-click no longer changes the viewed session on 0.2. The legacy no-key
+fallback retains its delayed-selection cancellation guard. Unload disconnects observers/list subscriptions,
 removes listeners and menus, and aborts pending plugin actions.

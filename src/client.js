@@ -158,20 +158,24 @@ function sessionItems(snapshot) {
 
 function createBridge(ctx = {}) {
   const registry = createMenuRegistry()
+  const nativePins = () => typeof ctx?.uiWorkspace?.pinSession === 'function' &&
+    typeof ctx?.uiWorkspace?.unpinSession === 'function'
+  const pinnedIds = () => nativePins() ? sanitizeIds(workspaceSnapshot(ctx).pinnedSessionIds) : readPins()
   const bridge = {
-    version: 3,
+    version: 4,
     menuApiVersion: 1,
     registerActions: (owner, actions) => registry.register(owner, actions),
     eventName: CHANGE_EVENT,
-    listPinned: readPins,
+    listPinned: pinnedIds,
     isPinned(sessionId) {
-      return readPins().includes(String(sessionId))
+      return pinnedIds().includes(String(sessionId))
     },
     togglePin(sessionId) {
+      if (nativePins()) return bridge.pinSession(undefined, sessionId)
       return toggleStoredId(STORAGE_KEY, sessionId)
     },
     sortPinned(sessionIds) {
-      return sortPinnedIds(sessionIds, readPins())
+      return sortPinnedIds(sessionIds, pinnedIds())
     },
     listWorkspacePinned: readWorkspacePins,
     isWorkspacePinned(workspaceId) {
@@ -205,6 +209,15 @@ function createBridge(ctx = {}) {
     },
     async pinSession(workspaceId, sessionId) {
       const id = String(sessionId)
+      if (nativePins()) {
+        if (!sessionItems(sessionsSnapshot(ctx)).some(item => sessionIdOf(item) === id && !item.blank)) {
+          throw new Error('会话已变更，请重新打开菜单')
+        }
+        const pinned = !bridge.isPinned(id)
+        await ctx.uiWorkspace[pinned ? 'pinSession' : 'unpinSession'](id)
+        emitChange(pinnedIds(), readWorkspacePins())
+        return pinned
+      }
       const owner = (workspaceSnapshot(ctx).items ?? []).find(item => workspaceIdOf(item) === String(workspaceId))
       if (!owner?.sessionIds.includes(id)) throw new Error('会话归属已变更，请重新打开菜单')
       if (typeof ctx?.workspaces?.insertSessionBefore !== 'function') throw new Error('官方排序接口未就绪')
@@ -308,6 +321,20 @@ function uniqueByTitle(items, title, titleOf) {
 
 function resolveRow(ctx, row) {
   const workspaces = workspaceSnapshot(ctx).items ?? []
+  // DSH 0.2 renders stable keys, including unnamed sessions and duplicate titles.
+  // Once a key is present, never infer an identity from labels or selection.
+  const rowKey = row.getAttribute('data-row-key')
+  if (rowKey !== null) {
+    if (classContains(row, '_projectRow')) {
+      return { workspace: rowKey.startsWith('workspace:')
+        ? workspaces.find(item => workspaceIdOf(item) === rowKey.slice(10)) : undefined }
+    }
+    const session = rowKey.startsWith('session:')
+      ? sessionItems(sessionsSnapshot(ctx)).find(item => !item.blank && sessionIdOf(item) === rowKey.slice(8))
+      : undefined
+    const owners = session ? workspaces.filter(item => item.sessionIds.includes(sessionIdOf(session))) : []
+    return { session, workspace: owners.length === 1 ? owners[0] : undefined }
+  }
   if (classContains(row, '_projectRow')) {
     return { workspace: uniqueByTitle(workspaces, rowTitle(row), workspaceTitleOf) }
   }
@@ -344,7 +371,8 @@ function decorateRows(ctx, bridge) {
     const { workspace, session } = resolveRow(ctx, row)
     addPinMarker(row, classContains(row, '_projectRow')
       ? !!workspace && bridge.isWorkspacePinned(workspaceIdOf(workspace))
-      : !!session && bridge.isPinned(sessionIdOf(session)))
+      // Native rows already render the authoritative pin state.
+      : !row.hasAttribute('data-row-key') && !!session && bridge.isPinned(sessionIdOf(session)))
   }
 }
 
@@ -413,6 +441,7 @@ async function joinWorkspaceWithMaintenance(input) {
 }
 
 async function selectSessionRow(ctx, row, lifetime) {
+  if (row.hasAttribute('data-row-key')) return resolveRow(ctx, row)
   // RC1 exposes no row ID. Its native onClick selects the exact node.id in the
   // public Session Controller; wait only for aria-selected to confirm that row.
   row.click()
@@ -467,7 +496,7 @@ async function showEnhancementMenu(ctx, bridge, row, event, scheduleDecorate, li
   const currentTarget = () => {
     if (!row.isConnected || lifetime.disposed) throw new Error('列表已刷新，请重新打开菜单')
     const current = resolveRow(ctx, row)
-    if ((!workspaceRow && (row.getAttribute('aria-selected') !== 'true' || sessionsSnapshot(ctx).current !== sessionIdOf(target.session))) ||
+    if ((!workspaceRow && !row.hasAttribute('data-row-key') && (row.getAttribute('aria-selected') !== 'true' || sessionsSnapshot(ctx).current !== sessionIdOf(target.session))) ||
         sessionIdOf(current.session) !== sessionIdOf(target.session) ||
         workspaceIdOf(current.workspace) !== workspaceIdOf(target.workspace)) {
       throw new Error('会话或工作区已变更，请重新打开菜单')
@@ -530,7 +559,7 @@ async function showEnhancementMenu(ctx, bridge, row, event, scheduleDecorate, li
       const current = currentTarget()
       const pinned = await bridge.pinSession(workspaceIdOf(current.workspace), sessionIdOf(current.session))
       if (!lifetime.disposed) showToast(pinned ? '聊天已移到顶部' : '已取消置顶标记')
-    }, !!session && !!target.workspace)
+    }, !!session && (!!target.workspace || typeof ctx?.uiWorkspace?.pinSession === 'function'))
     item('删除会话', async () => {
       const current = currentTarget()
       const message = await deleteMaintenanceSession(ctx, sessionIdOf(current.session))
@@ -575,7 +604,7 @@ async function showEnhancementMenu(ctx, bridge, row, event, scheduleDecorate, li
     reason.setAttribute('role', 'status')
     reason.style.cssText = 'max-width:280px;padding:8px 10px;opacity:.8'
     reason.textContent = workspaceRow ? '工作区身份不唯一；可使用上方官方操作。'
-      : '未能确认此行的官方会话 ID；请先左键选中后重试。'
+      : '未能确认此行的官方会话 ID；请刷新列表后重试。'
     menu.appendChild(reason)
   }
   placeAndOpenMenu(menu, event.clientX, event.clientY)

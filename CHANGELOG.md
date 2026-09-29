@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.5-dsh02.1 — 2026-09-29
+
+- Target DSH 0.2.0-rc.2; resolve stable native row keys against current snapshots without selecting a different conversation.
+- Support duplicate/untitled rows, reject stale or malformed keys, and revalidate recycled rows before an action.
+- Use native pin/unpin and host pin state, including ungrouped sessions. Preserve old local markers without importing them into host state.
+- Bump the bridge to version 4 because native `togglePin` is asynchronous; menu action API 1 remains unchanged.
+- Retain menu action API 1, unload cancellation, workspace handoff and receipt-before-hide deletion. Build and 51 synthetic regressions pass; live UI and Maintenance integration remain unverified.
+
 ## 0.3.2 — 2026-09-05
 
 - Add an owner-scoped menu action host with immutable selected-session context,
